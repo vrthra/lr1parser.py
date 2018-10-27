@@ -29,34 +29,6 @@ RE_NONTERMINAL = re.compile(r'(\$[a-zA-Z_]*)')
 def et(v): return v.replace("\t", " ").replace("\n", " ")
 
 def first(tok, grammar):
-    """
-    >>> g = {}
-    >>> g['$E']  = ['$T$Ex']
-    >>> g['$Ex'] = ['+$T$Ex','']
-    >>> g['$T'] = ['$F$Tx']
-    >>> g['$Tx'] = ['*$F$Tx', '']
-    >>> g['$F'] = ['($E)', '11']
-    >>> sorted(first('$E', g))
-    ['(', '1']
-    >>> sorted(first('$Ex', g))
-    ['', '+']
-    >>> sorted(first('$T', g))
-    ['(', '1']
-    >>> sorted(first('$Tx', g))
-    ['', '*']
-    >>> sorted(first('$F', g))
-    ['(', '1']
-
-    >>> grammar = term_grammar
-    >>> first('+', grammar)
-    {'+'}
-    >>> sorted(first('$DIGIT', grammar))
-    ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
-    >>> new_g = grammar
-    >>> new_g['$X'] = ['$DIGIT', '']
-    >>> sorted(first('$X', new_g))
-    ['', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
-    """
     # If X is a terminal then First(X) is just X!
     if is_terminal(tok): return set(tok)
     res = set()
@@ -89,35 +61,10 @@ def first(tok, grammar):
     return res
 
 def split_production_str(rule):
-    """
-    >>> split_production_str('ac $abc bd')
-    ['ac ', '$abc', ' bd']
-    >>> split_production_str('1')
-    ['1']
-    """
     if '$' not in rule: return [rule]
     return [f for f in re.split(RE_NONTERMINAL, rule) if f]
 
 def follow(grammar, start='$START', fdict={}):
-    """
-    >>> g = {}
-    >>> g['$E']  = ['$T$Ex']
-    >>> g['$Ex'] = ['+$T$Ex','']
-    >>> g['$T'] = ['$F$Tx']
-    >>> g['$Tx'] = ['*$F$Tx', '']
-    >>> g['$F'] = ['($E)', '11']
-    >>> fdict = follow(g, '$E', {})
-    >>> sorted(fdict['$E'])
-    ['$', ')']
-    >>> sorted(fdict['$Ex'])
-    ['$', ')']
-    >>> sorted(fdict['$T'])
-    ['$', ')', '+']
-    >>> sorted(fdict['$Tx'])
-    ['$', ')', '+']
-    >>> sorted(fdict['$F'])
-    ['$', ')', '*', '+']
-    """
     # First put $ (the end of input marker) in Follow(S) (S is the start symbol)
     fdict = fdict or {k:set() for k in grammar.keys()}
 
@@ -160,24 +107,10 @@ def follow(grammar, start='$START', fdict={}):
 class Token: pass
 
 def is_nonterminal(val):
-    """
-    >>> is_nonterminal('$START')
-    True
-    >>> is_nonterminal('+')
-    False
-    >>> is_nonterminal('$')
-    False
-    """
     if not val: return False
     return len(val) > 1 and val[0] == '$'
 
 def is_terminal(val):
-    """
-    >>> is_terminal('$START')
-    False
-    >>> is_terminal('+')
-    True
-    """
     return not is_nonterminal(val)
 
 def symbols(grammar):
@@ -206,24 +139,6 @@ class PLine:
 
     @classmethod
     def init_cache(cls, grammar, fdict):
-        """
-        Initializes the pline seeds
-        >>> g = {}
-        >>> g['$S'] = ['$E']
-        >>> g['$E'] = ['$T + $E', '$T']
-        >>> g['$T'] = ['1']
-        >>> PLine.init_cache(g, follow(g, '$S', {}))
-        4
-        >>> et(str(PLine.cache[('$S', '$E', 0)]))
-        '[p2]: $S -> $E  cursor: 0 @$'
-        >>> et(str(PLine.cache[('$E', '$T + $E', 0)]))
-        '[p0]: $E -> $T + $E  cursor: 0 @$'
-        >>> et(str(PLine.cache[('$E', '$T', 0)]))
-        '[p1]: $E -> $T  cursor: 0 @$'
-        >>> et(str(PLine.cache[('$T', '1', 0)]))
-        '[p3]: $T -> 1  cursor: 0 @ $+'
-        >>> PLine.reset()
-        """
         PLine.fdict = fdict
         for key in sorted(grammar.keys()):
             for production in grammar[key]:
@@ -271,31 +186,6 @@ class PLine:
                 self.key, ''.join([str(i) for i in self.tokens]), self.cursor, '@' + ''.join(sorted(self.lookahead)))
 
     def advance(self):
-        """
-        creates a new pline with cursor incremented by one
-        >>> PLine.reset()
-        >>> g = {}
-        >>> g['$S'] = ['$E']
-        >>> g['$E'] = ['$T + $E', '$T']
-        >>> g['$T'] = ['1']
-        >>> PLine.init_cache(g, follow(g, '$S', {}))
-        4
-        >>> c = lr1_closure([PLine.get(key='$S', production='$E', cursor=0)], 0, g)
-        >>> et(str(c[0]))
-        '[p2]: $S -> $E  cursor: 0 @$'
-        >>> et(str(c[0].advance()))
-        "('$E', [p2]: $S -> $E  cursor: 1 @$)"
-        >>> et(str(c[1]))
-        '[p0]: $E -> $T + $E  cursor: 0 @$'
-        >>> et(str(c[1].advance()))
-        "('$T', [p0]: $E -> $T + $E  cursor: 1 @$)"
-        >>> et(str(c[2]))
-        '[p1]: $E -> $T  cursor: 0 @$'
-        >>> et(str(c[2].advance()))
-        "('$T', [p1]: $E -> $T  cursor: 1 @$)"
-        >>> PLine.reset()
-        """
-
         if self.cursor >= len(self.tokens):
             return '', None
         if self.at(self.cursor) == EOF: return '', None
@@ -306,30 +196,6 @@ class PLine:
         return self.tokens[cursor]
 
 def lr1_closure(closure, cursor, grammar):
-    """
-    >>> g = {}
-    >>> g['$S'] = ['$E']
-    >>> g['$E'] = ['$T + $E', '$T']
-    >>> g['$T'] = ['1']
-    >>> PLine.init_cache(g, follow(g, '$S', {}))
-    4
-    >>> c = lr1_closure([PLine.get(key='$S', production='$E', cursor=0)], 0, g)
-    >>> c = [et(str(l)) for l in c]
-    >>> len(c)
-    4
-
-    TODO: verify if $ belongs here.
-
-    >>> c[0]
-    '[p2]: $S -> $E  cursor: 0 @$'
-    >>> c[1]
-    '[p0]: $E -> $T + $E  cursor: 0 @$'
-    >>> c[2]
-    '[p1]: $E -> $T  cursor: 0 @$'
-    >>> c[3]
-    '[p3]: $T -> 1  cursor: 0 @ $+'
-    >>> PLine.reset()
-    """
     # get non-terminals following start.cursor
     # a) Add the item itself to the closure
     items = closure[:] # copy
@@ -395,26 +261,6 @@ class State:
 
     @classmethod
     def construct_initial_state(cls, grammar, start='$START'):
-        """
-        >>> State.reset()
-        >>> g = {}
-        >>> g['$S'] = ['$E']
-        >>> g['$E'] = ['$T + $E', '$T']
-        >>> g['$T'] = ['1']
-        >>> s = State.construct_initial_state(g, start='$S')
-        >>> l = [et(str(l)) for l in s.plines]
-        >>> len(l)
-        4
-        >>> l[0]
-        '[p2]: $S -> $E.$  cursor: 0 @$'
-        >>> l[1]
-        '[p0]: $E -> $T + $E  cursor: 0 @$'
-        >>> l[2]
-        '[p1]: $E -> $T  cursor: 0 @$'
-        >>> l[3]
-        '[p3]: $T -> 1  cursor: 0 @ $+'
-        >>> State.reset()
-        """
         PLine.init_cache(grammar, follow(grammar, start, {}))
         key = start
         production_str = grammar[key][0]
@@ -428,19 +274,6 @@ class State:
         return state
 
     def go_to(self, token):
-        """
-        >>> State.reset()
-        >>> g = {}
-        >>> g['$S'] = ['$E']
-        >>> g['$E'] = ['$T + $E', '$T']
-        >>> g['$T'] = ['1']
-        >>> s = State.construct_initial_state(g, start='$S')
-        >>> et(str(s.go_to('$T')))
-        'State(1 -> [$T] ->  2):  [p0]: $E -> $T + $E  cursor: 1 @$  [p1]: $E -> $T  cursor: 1 @$'
-        >>> et(str(s.go_to('1')))
-        'None'
-        >>> State.reset()
-        """
         if self.go_tos.get(token): return self.go_tos[token]
         if is_terminal(token): return None
         new_plines = []
@@ -455,19 +288,6 @@ class State:
         return s
 
     def shift_to(self, token):
-        """
-        >>> State.reset()
-        >>> g = {}
-        >>> g['$S'] = ['$E']
-        >>> g['$E'] = ['$T + $E', '$T']
-        >>> g['$T'] = ['1']
-        >>> s = State.construct_initial_state(g, start='$S')
-        >>> et(str(s.shift_to('$T')))
-        'None'
-        >>> et(str(s.shift_to('1')))
-        'State(1 -> [1] ->  2):  [p3]: $T -> 1  cursor: 1 @ $+'
-        >>> State.reset()
-        """
         if self.shifts.get(token): return self.shifts[token]
         if is_nonterminal(token): return None
         new_plines = []
@@ -500,32 +320,6 @@ class State:
 
     @classmethod
     def construct_states(cls, grammar, start='$START'):
-        """
-        >>> State.reset()
-        >>> g = {}
-        >>> g['$S'] = ['$E']
-        >>> g['$E'] = ['$T', '$T + $E']
-        >>> g['$T'] = ['1']
-        >>> s = State.construct_states(g, '$S')
-        >>> len(State.registry)
-        6
-
-        >> len(s.shifts) # there should be two shifts
-        2
-        >> len(s.go_tos) # there should be 4 gotos
-        4
-
-        >>> et(str(s.shift_to('$T')))
-        'None'
-        >>> et(str(s.go_to('$T')))
-        'State(5 -> [$T] ->  3):  [p0]: $E -> $T  cursor: 1 @$  [p1]: $E -> $T + $E  cursor: 1 @$'
-        >>> et(str(s.go_to('$E')))
-        'State(1 -> [$E] ->  2):  [p2]: $S -> $E  cursor: 1 @$'
-        >>> len(State.registry) # todo -- two of them -- state3, and state4 are dups
-        6
-        >>> State.reset()
-        """
-
         state1 = State.construct_initial_state(grammar, start)
         states = [state1]
         follow = {}
@@ -568,17 +362,6 @@ class State:
 
 
 def parse(input_text, grammar):
-    """
-    >>> State.reset()
-    >>> g = {}
-    >>> g['$S']  = ['$E']
-    >>> g['$E']  = ['$T+$E', '$T']
-    >>> g['$T']  = ['1']
-    >>> s1 = State.construct_states(g, start='$S')
-    >>> text = "11"
-    >>> parse(text, g, State.registry)
-    >>> State.reset()
-    """
     expr_stack = []
     state_stack = [State.registry[1].i]
     tokens = list(input_text)
