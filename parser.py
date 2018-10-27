@@ -8,27 +8,132 @@ import logging as log
 log.basicConfig( stream=sys.stdout, level=log.DEBUG )
 
 EOF = '\0'
+EPSILON=''
+START_SYMBOL = '<start>'
 
-calc_grammar = [
-    ("$START", ["$EXPR"]),
+RE_NONTERMINAL = re.compile(r'(<[^<> ]*>)')
 
-    ("$EXPR", ["$EXPR+$TERM", "$EXPR-$TERM", "$TERM"]),
+def split(rule):
+    return [s for s in re.split(RE_NONTERMINAL, rule) if s]
 
-    ("$TERM", ["$TERM*$FACTOR", "$TERM/$FACTOR", "$FACTOR"]),
+def canonical(grammar):
+    return  {k: [split(l) for l in rules] for k, rules in grammar.items()}
 
-    ("$FACTOR", ["+$FACTOR", "-$FACTOR", "($EXPR)", "$INTEGER", "$INTEGER.$INTEGER"]),
+term_grammar = {'<start>': ['<expr>'],
+ '<expr>': ['<term>+<expr>', '<term>-<expr>', '<term>'],
+ '<term>': ['<factor>*<term>', '<factor>/<term>', '<factor>'],
+ '<factor>': ['+<factor>',
+  '-<factor>',
+  '(<expr>)',
+  '<integer>.<integer>',
+  '<integer>'],
+ '<integer>': ['<digit><integer>', '<digit>'],
+ '<digit>': ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']}
 
-    ("$INTEGER", ["$INTEGER$DIGIT", "$DIGIT"]),
+grammar = canonical(term_grammar)
 
-    ("$DIGIT", ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
-]
-
-term_grammar = dict(calc_grammar)
-
-RE_NONTERMINAL = re.compile(r'(\$[a-zA-Z_]*)')
 def et(v): return v.replace("\t", " ").replace("\n", " ")
 
+
+def rules(g): return [(k, e) for k, a in g.items() for e in a]
+
+def terminals(g):
+    return set(t for k, expr in rules(g) for t in expr if t not in g)
+def fixpoint(f):
+    def helper(*args):
+        while True:
+            sargs = repr(args)
+            args_ = f(*args)
+            if repr(args_) == sargs:
+                return args
+            args = args_
+    return helper
+
+
+@fixpoint
+def nullable_(rules, e):
+    for A, expression in rules:
+        if all((token in e)  for token in expression): e |= {A}
+    return (rules, e)
+
+def nullable(grammar):
+    return nullable_(rules(grammar), set())[1]
+
+nullable_hash = nullable(grammar)
+
+@fixpoint
+def firstset_(rules, first, epsilon):
+    for A, expression in rules:
+        for token in expression:
+            first[A] |= first[token]
+
+            # update until the first token that is not nullable
+            if token not in epsilon:
+                break
+    return (rules, first, epsilon)
+
+def firstset(grammar, epsilon):
+    # https://www.cs.umd.edu/class/spring2014/cmsc430/lectures/lec05.pdf p6
+    # (1) If X is a terminal, then First(X) is just X
+    first = {i:{i} for i in terminals(grammar)}
+
+    # (2) if X ::= epsilon, then epsilon \in First(X)
+    for k in grammar:
+        first[k] = {EPSILON} if k in epsilon else set()
+    return firstset_(rules(grammar), first, epsilon)[1]
+
+first_hash = firstset(grammar, EPSILON)
+
+@fixpoint
+def followset_(grammar, epsilon, first, follow):
+    for A, expression in rules(grammar):
+        # https://www.cs.umd.edu/class/spring2014/cmsc430/lectures/lec05.pdf
+        # https://www.cs.uaf.edu/~cs331/notes/FirstFollow.pdf
+        # essentially, we start from the end of the expression. Then:
+        # (3) if there is a production A -> aB, then every thing in
+        # FOLLOW(A) is in FOLLOW(B)
+        # note: f_B serves as both follow and first.
+        f_B = follow[A]
+        for t in reversed(expression):
+            # update the follow for the current token. If this is the
+            # first iteration, then here is the assignment
+            if t in grammar:
+                follow[t] |= f_B  # only bother with nt
+
+            # computing the last follow symbols for each token t. This
+            # will be used in the next iteration. If current token is
+            # nullable, then previous follows can be a legal follow for
+            # next. Else, only the first of current token is legal follow
+            # essentially
+
+            # (2) if there is a production A -> aBb then everything in FIRST(B)
+            # except for epsilon is added to FOLLOW(B)
+            f_B = f_B | first[t] if t in epsilon else (first[t] - {EPSILON})
+
+    return (grammar, epsilon, first, follow)
+
+def followset(grammar, start):
+    # Initialize first and follow sets for non-terminals
+    follow = {i: set() for i in grammar}
+    follow[start] = {EOF}
+
+    epsilon = nullable(grammar)
+    first = firstset(grammar, epsilon)
+    return followset_(grammar, epsilon, first, follow)
+
+follow_hash = followset(grammar, START_SYMBOL)[3]
+
+def rnullable(rule, epsilon):
+    return all(token in epsilon for token in rule)
+def rfirst(rule, first, epsilon):
+    tokens = set()
+    for token in rule:
+        tokens |= first[token]
+        if token not in epsilon: break
+    return tokens
+
 def first(tok, grammar):
+    #return first_hash[tok]
     # If X is a terminal then First(X) is just X!
     if is_terminal(tok): return set(tok)
     res = set()
@@ -38,7 +143,7 @@ def first(tok, grammar):
             res |= set([''])
         else:
             # If there is a Production X -> Y1Y2..Yk then add first(Y1Y2..Yk) to first(X)
-            tokens = split_production_str(rule) #  $ is being missed here.
+            tokens = rule #  $ is being missed here.
             add_empty = True
             for t in tokens:
                 # First(Y1Y2..Yk) is either
@@ -60,11 +165,7 @@ def first(tok, grammar):
                 res |= set([''])
     return res
 
-def split_production_str(rule):
-    if '$' not in rule: return [rule]
-    return [f for f in re.split(RE_NONTERMINAL, rule) if f]
-
-def follow(grammar, start='$START', fdict={}):
+def follow(grammar, start=START_SYMBOL, fdict={}):
     # First put $ (the end of input marker) in Follow(S) (S is the start symbol)
     fdict = fdict or {k:set() for k in grammar.keys()}
 
@@ -74,7 +175,7 @@ def follow(grammar, start='$START', fdict={}):
     fdict[start] |= {EOF}
     for key in sorted(grammar.keys()):
         for rule in grammar[key]:
-            tokens = split_production_str(rule)
+            tokens = rule
             A = key
             for i, B in enumerate(tokens):
                 if not B: continue
@@ -107,8 +208,7 @@ def follow(grammar, start='$START', fdict={}):
 class Token: pass
 
 def is_nonterminal(val):
-    if not val: return False
-    return len(val) > 1 and val[0] == '$'
+    return val in grammar
 
 def is_terminal(val):
     return not is_nonterminal(val)
@@ -118,7 +218,7 @@ def symbols(grammar):
     for key in sorted(grammar.keys()):
         rules = grammar[key]
         for rule in rules:
-            elts = split_production_str(rule)
+            elts = rule
             all_symbols |= set(elts)
     return all_symbols
 
@@ -128,7 +228,7 @@ class PLine:
     fdict = None
     def __init__(self, key, production, cursor=0, lookahead=set(), pnum=0):
         self.key,self.production,self.cursor,self.lookahead = key,production,cursor,lookahead
-        self.tokens = split_production_str(self.production)
+        self.tokens = self.production
         self.pnum = pnum
 
     @classmethod
@@ -142,7 +242,7 @@ class PLine:
         PLine.fdict = fdict
         for key in sorted(grammar.keys()):
             for production in grammar[key]:
-                PLine.cache[(key, production, 0)] = PLine(key, production,
+                PLine.cache[str((key, production, 0))] = PLine(key, production,
                         cursor=0, lookahead=fdict[key], pnum=PLine.counter)
                 PLine.counter += 1
         return len(PLine.cache.keys())
@@ -152,12 +252,12 @@ class PLine:
         """
         Try to get a predefined pline. If we fail, create new instead.
         """
-        val = PLine.cache.get((key, production, cursor))
+        val = PLine.cache.get(str((key, production, cursor)))
         if val: return val
 
-        seed = PLine.cache.get((key, production, 0))
+        seed = PLine.cache.get(str((key, production, 0)))
         val = PLine(key, production, cursor, seed.lookahead, seed.pnum)
-        PLine.cache[(key, production, cursor)] = val
+        PLine.cache[str((key, production, cursor))] = val
 
         return val
 
@@ -260,8 +360,8 @@ class State:
     def __repr__(self): return str(self)
 
     @classmethod
-    def construct_initial_state(cls, grammar, start='$START'):
-        PLine.init_cache(grammar, follow(grammar, start, {}))
+    def construct_initial_state(cls, grammar, start=START_SYMBOL):
+        PLine.init_cache(grammar, follow_hash)
         key = start
         production_str = grammar[key][0]
 
@@ -319,7 +419,7 @@ class State:
 
 
     @classmethod
-    def construct_states(cls, grammar, start='$START'):
+    def construct_states(cls, grammar, start=START_SYMBOL):
         state1 = State.construct_initial_state(grammar, start)
         states = [state1]
         follow = {}
@@ -410,7 +510,7 @@ def parse(input_text, grammar):
 
 
 def initialize(grammar, start):
-    grammar[start] = [grammar[start][0] + EOF]
+    grammar[start][0].append(EOF)
     State.construct_states(grammar, start)
 
 def using(fn):
@@ -418,8 +518,7 @@ def using(fn):
 
 def main(args):
     to_parse, = [f.read().strip() for f in using(open(args[1], 'r'))]
-    grammar = term_grammar
-    initialize(grammar, '$START')
+    initialize(grammar, START_SYMBOL)
     val = parse(to_parse, grammar)
     print(json.dumps(val))
 
