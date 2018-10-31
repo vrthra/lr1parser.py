@@ -5,11 +5,18 @@ import json
 import re
 import collections
 import logging as log
+from enum import Enum, auto
 log.basicConfig( stream=sys.stdout, level=log.DEBUG )
 
 EOF = '\0'
 EPSILON=''
 START_SYMBOL = '<start>'
+
+class Action(Enum):
+    Goto = auto()
+    Shift = auto()
+    Accept = auto()
+    Reduce = auto()
 
 RE_NONTERMINAL = re.compile(r'(<[^<> ]*>)')
 
@@ -31,9 +38,6 @@ term_grammar = {'<start>': ['<expr>'],
  '<digit>': ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']}
 
 grammar = canonical(term_grammar)
-
-def et(v):
-    return v.replace("\t", " ").replace("\n", " ")
 
 def rules(g):
     return [(k, e) for k, a in g.items() for e in a]
@@ -305,14 +309,14 @@ class State:
                     new_state = state.shift_to(key)
                     if new_state: # and new_state.i not in seen:
                         states.append(new_state)
-                        state.hrow[key] = ('Shift', new_state.i)
+                        state.hrow[key] = (Action.Shift, new_state.i)
                     else:
                         state.hrow[key] = ('_', None)
                 else:
                     new_state = state.go_to(key)
                     if new_state: # and new_state.i not in seen:
                         states.append(new_state)
-                        state.hrow[key] = ('Goto', new_state.i)
+                        state.hrow[key] = (Action.Goto, new_state.i)
                     else:
                         state.hrow[key] = ('_', None)
 
@@ -323,10 +327,10 @@ class State:
             for line in state.plines:
                 if line.at(line.cursor) == EOF:
                     key = EOF 
-                    state.hrow[key] = ('Accept', None)
+                    state.hrow[key] = (Action.Accept, None)
                 elif line.cursor + 1 > len(line.tokens):
                     for key in line.lookahead:
-                        state.hrow[key] = ('Reduce', line)
+                        state.hrow[key] = (Action.Reduce, line)
         return state1
 
 def parse(input_text, grammar):
@@ -343,13 +347,13 @@ def parse(input_text, grammar):
                 next_token, *tokens = tokens
         # use the next_token on the state stack to decide what to do.
         (action, nxt) = State.registry[state_stack[-1]].hrow[next_token]
-        if action == 'Shift':
+        if action == Action.Shift:
             next_state = State.registry[nxt]
             # this means we can shift.
             expr_stack.append(next_token)
             state_stack.append(next_state.i)
             next_token = None
-        elif action == 'Reduce':
+        elif action == Action.Reduce:
             pline = nxt
             # Remove the matched topmost L symbols (and parse trees and
             # associated state numbers) from the parse stack.
@@ -364,10 +368,10 @@ def parse(input_text, grammar):
             (action, nxt) = State.registry[state_stack[-1]].hrow[pline.key]
             next_state = State.registry[nxt]
             state_stack.append(next_state.i)
-        elif action == 'Goto':
+        elif action == Action.Goto:
             next_state = State.registry[nxt]
             state_stack.append(next_state.i)
-        elif action == 'Accept':
+        elif action == Action.Accept:
             break
         else:
             raise Exception("Syntax error")
