@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 # vim: set expandtab:
 import sys
-import json
 import re
-import collections
-import logging as log
 from enum import Enum, auto
-log.basicConfig( stream=sys.stdout, level=log.DEBUG )
 
 EOF = '\0'
 EPSILON=''
@@ -103,7 +99,6 @@ class Item:
     counter = 0
     def __init__(self, key, expr, dot=0, lookahead=set(), pnum=0):
         self.key,self.expr,self.dot,self.lookahead = key,expr,dot,lookahead
-        self.tokens = self.expr
         self.pnum = pnum
 
     @classmethod
@@ -116,9 +111,6 @@ class Item:
 
     @classmethod
     def get(cls, key, expr, dot):
-        """
-        Try to get a predefined pline. If we fail, create new instead.
-        """
         val = Item.cache.get(str((key, expr, dot)))
         if val: return val
 
@@ -132,16 +124,16 @@ class Item:
 
     def __str__(self):
         return "[p%s]: %s -> %s \tcursor: %s %s" % (self.pnum,
-                self.key, ''.join([str(i) for i in self.tokens]), self.dot, '@' + ''.join(sorted(self.lookahead)))
+                self.key, ''.join([str(i) for i in self.expr]), self.dot, '@' + ''.join(sorted(self.lookahead)))
 
     def advance(self):
-        if self.dot >= len(self.tokens): return None
+        if self.dot >= len(self.expr): return None
         if self.at_dot() == EOF: return None
         return Item.get(self.key, self.expr, self.dot+1)
 
     def at_dot(self):
-        if self.dot >= len(self.tokens): return None
-        return self.tokens[self.dot]
+        if self.dot >= len(self.expr): return None
+        return self.expr[self.dot]
 
 class State:
     counter = 0
@@ -150,15 +142,14 @@ class State:
 
     def __init__(self, items, grammar):
         self.items = items
-        self.shifts = {}
-        self.go_tos = {}
+        self._tos = {}
         self.i = State.counter
         self.hrow = {}
         self.grammar = grammar
         State.counter += 1
         State.registry[self.i] = self
         self.key = ''.join([str(l) for l in items])
-        if State.cache.get(self.key): raise Exception("Cache already has the state. Use State.get")
+        if self.key in State.cache: raise Exception("Cache already has the state. Use State.get")
         State.cache[self.key] = self
 
     @classmethod
@@ -177,46 +168,26 @@ class State:
     def construct_initial_state(self, start):
         _, _epsilon, _first, follow = followset(self.grammar, start)
         Item.init_cache(self.grammar, follow)
-        production_str = self.grammar[start][0]
 
-        pl = Item.get(key=start, expr=production_str, dot=0)
+        pl = Item.get(key=start, expr=self.grammar[start][0], dot=0)
+        return  self.form_closure([pl])
 
-        lr1_items = self.lr1_closure(closure=[pl], dot=0)
-        return  State(lr1_items, self.grammar)
-
-    def go_to(self, token):
-        if token in self.go_tos: return self.shifts[token]
-        if token not in self.grammar: return None
-        new_plines = []
-        for pline in self.items:
-            if pline.at_dot() == token:
-                new_pline = pline.advance()
-                if new_pline:
-                    new_plines.append(new_pline)
-        if not new_plines: return None
-        s = self.form_closure(new_plines)
-        self.go_tos[token] = s
+    def _to(self, token):
+        if token in self._tos: return self._tos[token]
+        new_items = []
+        for item in self.items:
+            if item.at_dot() == token:
+                new_item = item.advance()
+                if new_item:
+                    new_items.append(new_item)
+        if not new_items: return None
+        s = self.form_closure(new_items)
+        self._tos[token] = s
         return s
 
-    def shift_to(self, token):
-        if token in self.shifts: return self.shifts[token]
-        if token in self.grammar: return None
-        new_plines = []
-        for pline in self.items:
-            if pline.at_dot() == token:
-                new_pline = pline.advance()
-                if new_pline:
-                    new_plines.append(new_pline)
-        if not new_plines: return None
-        # each time we shift, we have to build a new closure, with dot at 0
-        # for the newly added rules.
-        s = self.form_closure(new_plines)
-        self.shifts[token] = s
-        return s
 
     def form_closure(self, items):
-        closure = self.lr1_closure(closure=items, dot=0)
-        return State.get(closure, self.grammar)
+        return State.get(self.lr1_closure(closure=items, dot=0), self.grammar)
 
     def lr1_closure(self, closure, dot):
         # get non-terminals following start.dot
@@ -245,7 +216,6 @@ class State:
     def construct_states(self, start):
         state1 = self.construct_initial_state(start)
         states = [state1]
-        follow = {}
         all_states = set()
         seen = set()
         while states:
@@ -255,20 +225,11 @@ class State:
             all_states.add(state)
             sym = symbols(grammar)
             for key in sorted(sym): # needs terminal symbols too.
-                if key not in grammar:
-                    new_state = state.shift_to(key)
-                    if new_state: # and new_state.i not in seen:
-                        states.append(new_state)
-                        state.hrow[key] = (Action.Shift, new_state.i)
-                    else:
-                        state.hrow[key] = ('_', None)
-                else:
-                    new_state = state.go_to(key)
-                    if new_state: # and new_state.i not in seen:
-                        states.append(new_state)
-                        state.hrow[key] = (Action.Goto, new_state.i)
-                    else:
-                        state.hrow[key] = ('_', None)
+                new_state = state._to(key)
+                if new_state:
+                    states.append(new_state)
+                    action = Action.Shift if key not in grammar else Action.Goto
+                    state.hrow[key] = (action, new_state.i)
 
         for state in all_states:
             # for each item, with an LR left of $, add an accept.
@@ -276,9 +237,8 @@ class State:
             # r p
             for line in state.items:
                 if line.at_dot() == EOF:
-                    key = EOF 
-                    state.hrow[key] = (Action.Accept, None)
-                elif line.dot + 1 > len(line.tokens):
+                    state.hrow[EOF] = (Action.Accept, None)
+                elif line.dot + 1 > len(line.expr):
                     for key in line.lookahead:
                         state.hrow[key] = (Action.Reduce, line)
         return state1
@@ -300,22 +260,22 @@ def parse(input_text, grammar):
         if action == Action.Shift:
             next_state = State.registry[nxt]
             # this means we can shift.
-            expr_stack.append(next_token)
+            expr_stack.append((next_token, []))
             state_stack.append(next_state.i)
             next_token = None
         elif action == Action.Reduce:
-            pline = nxt
+            item = nxt
             # Remove the matched topmost L symbols (and parse trees and
             # associated state numbers) from the parse stack.
             # pop the items' rhs symbols off the stack
-            pnum = len(pline.tokens)
+            pnum = len(item.expr)
             popped = expr_stack[-pnum:]
             expr_stack = expr_stack[:-pnum]
-            # push the lhs symbol of pline
-            expr_stack.append({pline.key: popped})
+            # push the lhs symbol of item
+            expr_stack.append((item.key, popped))
             # pop the same number of states.
             state_stack = state_stack[:-pnum]
-            (action, nxt) = State.registry[state_stack[-1]].hrow[pline.key]
+            (action, nxt) = State.registry[state_stack[-1]].hrow[item.key]
             next_state = State.registry[nxt]
             state_stack.append(next_state.i)
         elif action == Action.Goto:
@@ -335,8 +295,7 @@ def initialize(grammar, start):
 
 def main(args):
     initialize(grammar, START_SYMBOL)
-    val = parse(sys.argv[1], grammar)
-    print(json.dumps(val))
+    print(parse(sys.argv[1], grammar))
 
 if __name__ == '__main__':
     main(sys.argv)
