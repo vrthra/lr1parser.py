@@ -143,84 +143,52 @@ class Item:
         if self.dot >= len(self.tokens): return None
         return self.tokens[self.dot]
 
-def lr1_closure(closure, dot, grammar):
-    # get non-terminals following start.dot
-    # a) Add the item itself to the closure
-    items = closure[:] # copy
-    seen = set()
-    #for i in items: seen.add(i.key)
-    # c) Repeat (b, c) for any new items added under (b).
-    while items:
-        item, *items = items
-        # b) For any item in the closure, A :- α . β γ where the next symbol
-        # after the dot is a nonterminal, add the expr rules of that
-        # symbol where the dot is before the first item
-        # (e.g., for each rule β :- γ, add items: β :- . γ
-        token = item.at_dot()
-        if not token: continue
-        if token in seen: continue
-        if token in grammar:
-            for ps in grammar[token]:
-                pl = Item.get(key=token, expr=ps, dot=0)
-                items.append(pl)
-                closure.append(pl)
-                seen.add(pl.key)
-    return closure
-
 class State:
-    counter = 1
+    counter = 0
     registry = {}
     cache = {}
 
-    def __init__(self, plines, sfrom=None):
-        self.plines = plines
+    def __init__(self, items, grammar):
+        self.items = items
         self.shifts = {}
         self.go_tos = {}
         self.i = State.counter
-        self.row = []
         self.hrow = {}
-        self.note = "*"
-        if sfrom:
-            self.grammar = sfrom.grammar
-            self.start = sfrom.start
+        self.grammar = grammar
         State.counter += 1
         State.registry[self.i] = self
-        self.key = ''.join([str(l) for l in plines])
+        self.key = ''.join([str(l) for l in items])
         if State.cache.get(self.key): raise Exception("Cache already has the state. Use State.get")
         State.cache[self.key] = self
 
     @classmethod
-    def get(cls, plines, sfrom=None):
-        key = ''.join([str(l) for l in plines])
+    def get(cls, items, grammar):
+        key = ''.join([str(l) for l in items])
         val = State.cache.get(key)
         if val: return val
-        State.cache[key] = State(plines, sfrom)
+        State.cache[key] = State(items, grammar)
         return State.cache[key]
 
     def __str__(self):
-        return "State(%s):\n\t%s" % (self.i, "\n\t".join([str(i) for i in self.plines]))
+        return "State(%s):\n\t%s" % (self.i, "\n\t".join([str(i) for i in self.items]))
 
     def __repr__(self): return str(self)
 
-    @classmethod
-    def construct_initial_state(cls, grammar, start=START_SYMBOL):
-        _, _epsilon, _first, follow = followset(grammar, start)
-        Item.init_cache(grammar, follow)
-        production_str = grammar[start][0]
+    def construct_initial_state(self, start):
+        _, _epsilon, _first, follow = followset(self.grammar, start)
+        Item.init_cache(self.grammar, follow)
+        production_str = self.grammar[start][0]
 
         pl = Item.get(key=start, expr=production_str, dot=0)
 
-        lr1_items = lr1_closure(closure=[pl], dot=0, grammar=grammar)
-        state =  cls(lr1_items, 0)
-        # seed state
-        state.start, state.grammar = start, grammar
-        return state
+        lr1_items = self.lr1_closure(closure=[pl], dot=0)
+        return  State(lr1_items, self.grammar)
 
     def go_to(self, token):
-        if self.go_tos.get(token): return self.go_tos[token]
+        if token in self.go_tos: return self.shifts[token]
         if token not in self.grammar: return None
         new_plines = []
-        for pline in self.plines:
+        for pline in self.items:
             if pline.at_dot() == token:
                 new_pline = pline.advance()
                 if new_pline:
@@ -228,14 +196,13 @@ class State:
         if not new_plines: return None
         s = self.form_closure(new_plines)
         self.go_tos[token] = s
-        s.note = "%s -> [%s] -> " % (self.i,  token)
         return s
 
     def shift_to(self, token):
-        if self.shifts.get(token): return self.shifts[token]
+        if token in self.shifts: return self.shifts[token]
         if token in self.grammar: return None
         new_plines = []
-        for pline in self.plines:
+        for pline in self.items:
             if pline.at_dot() == token:
                 new_pline = pline.advance()
                 if new_pline:
@@ -245,17 +212,38 @@ class State:
         # for the newly added rules.
         s = self.form_closure(new_plines)
         self.shifts[token] = s
-        s.note = "%s -> [%s] -> " % (self.i,  token)
         return s
 
-    def form_closure(self, plines):
-        closure = lr1_closure(closure=plines, dot=0, grammar=self.grammar)
-        s = State.get(plines=plines, sfrom=self)
-        return s
+    def form_closure(self, items):
+        closure = self.lr1_closure(closure=items, dot=0)
+        return State.get(closure, self.grammar)
 
-    @classmethod
-    def construct_states(cls, grammar, start=START_SYMBOL):
-        state1 = State.construct_initial_state(grammar, start)
+    def lr1_closure(self, closure, dot):
+        # get non-terminals following start.dot
+        # a) Add the item itself to the closure
+        items = closure[:] # copy
+        seen = set()
+        #for i in items: seen.add(i.key)
+        # c) Repeat (b, c) for any new items added under (b).
+        while items:
+            item, *items = items
+            # b) For any item in the closure, A :- α . β γ where the next symbol
+            # after the dot is a nonterminal, add the expr rules of that
+            # symbol where the dot is before the first item
+            # (e.g., for each rule β :- γ, add items: β :- . γ
+            token = item.at_dot()
+            if not token: continue
+            if token in seen: continue
+            if token in self.grammar:
+                for ps in self.grammar[token]:
+                    pl = Item.get(key=token, expr=ps, dot=0)
+                    items.append(pl)
+                    closure.append(pl)
+                    seen.add(pl.key)
+        return closure
+
+    def construct_states(self, start):
+        state1 = self.construct_initial_state(start)
         states = [state1]
         follow = {}
         all_states = set()
@@ -286,7 +274,7 @@ class State:
             # for each item, with an LR left of $, add an accept.
             # for each item, with an LR with dot at the end, add a reduce
             # r p
-            for line in state.plines:
+            for line in state.items:
                 if line.at_dot() == EOF:
                     key = EOF 
                     state.hrow[key] = (Action.Accept, None)
@@ -319,7 +307,7 @@ def parse(input_text, grammar):
             pline = nxt
             # Remove the matched topmost L symbols (and parse trees and
             # associated state numbers) from the parse stack.
-            # pop the plines' rhs symbols off the stack
+            # pop the items' rhs symbols off the stack
             pnum = len(pline.tokens)
             popped = expr_stack[-pnum:]
             expr_stack = expr_stack[:-pnum]
@@ -343,7 +331,7 @@ def parse(input_text, grammar):
 
 def initialize(grammar, start):
     grammar[start][0].append(EOF)
-    State.construct_states(grammar, start)
+    State([], grammar).construct_states(start)
 
 def main(args):
     initialize(grammar, START_SYMBOL)
