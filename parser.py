@@ -94,6 +94,21 @@ def followset(grammar, start):
     first = firstset(grammar, epsilon)
     return followset_(grammar, epsilon, first, follow)
 
+class Parser(object):
+    def __init__(self, grammar, start_symbol=START_SYMBOL):
+        self.start_symbol = start_symbol
+        self.grammar = grammar
+
+    def parse_prefix(self, text):
+        """Return pair (cursor, forest) for longest prefix of text"""
+        raise NotImplemented()
+
+    def parse(self, text):
+        cursor, forest = self.parse_prefix(text)
+        if cursor < len(text):
+            raise SyntaxError("at " + repr(text[cursor:]))
+        return forest
+
 class Item:
     cache = {}
     counter = 0
@@ -107,7 +122,6 @@ class Item:
             for expr in grammar[key]:
                 Item.cache[str((key, expr, 0))] = Item(key, expr, dot=0, lookahead=fdict[key], pnum=Item.counter)
                 Item.counter += 1
-        return len(Item.cache.keys())
 
     @classmethod
     def get(cls, key, expr, dot):
@@ -213,8 +227,14 @@ class State:
                     seen.add(pl.key)
         return closure
 
-    def construct_states(self, start):
-        state1 = self.construct_initial_state(start)
+class LR1Parser(Parser):
+    def __init__(self, grammar, start):
+        grammar[start][0].append(EOF)
+        super().__init__(grammar, start)
+        self.construct_states()
+
+    def construct_states(self):
+        state1 = State([], self.grammar).construct_initial_state(self.start_symbol)
         states = [state1]
         all_states = set()
         seen = set()
@@ -223,12 +243,12 @@ class State:
             if state.i in seen: continue
             seen.add(state.i)
             all_states.add(state)
-            sym = symbols(grammar)
+            sym = symbols(self.grammar)
             for key in sorted(sym): # needs terminal symbols too.
                 new_state = state._to(key)
                 if new_state:
                     states.append(new_state)
-                    action = Action.Shift if key not in grammar else Action.Goto
+                    action = Action.Shift if key not in self.grammar else Action.Goto
                     state.hrow[key] = (action, new_state.i)
 
         for state in all_states:
@@ -243,59 +263,56 @@ class State:
                         state.hrow[key] = (Action.Reduce, line)
         return state1
 
-def parse(input_text, grammar):
-    expr_stack = []
-    state_stack = [State.registry[1].i]
-    tokens = list(input_text)
-    next_token = None
-    tree = []
-    while True:
-        if not next_token:
-            if not tokens:
-                next_token = EOF
+
+    def parse(self, input_text):
+        expr_stack = []
+        state_stack = [State.registry[1].i]
+        tokens = list(input_text)
+        next_token = None
+        tree = []
+        while True:
+            if not next_token:
+                if not tokens:
+                    next_token = EOF
+                else:
+                    next_token, *tokens = tokens
+            # use the next_token on the state stack to decide what to do.
+            (action, nxt) = State.registry[state_stack[-1]].hrow[next_token]
+            if action == Action.Shift:
+                next_state = State.registry[nxt]
+                # this means we can shift.
+                expr_stack.append((next_token, []))
+                state_stack.append(next_state.i)
+                next_token = None
+            elif action == Action.Reduce:
+                item = nxt
+                # Remove the matched topmost L symbols (and parse trees and
+                # associated state numbers) from the parse stack.
+                # pop the items' rhs symbols off the stack
+                pnum = len(item.expr)
+                popped = expr_stack[-pnum:]
+                expr_stack = expr_stack[:-pnum]
+                # push the lhs symbol of item
+                expr_stack.append((item.key, popped))
+                # pop the same number of states.
+                state_stack = state_stack[:-pnum]
+                (action, nxt) = State.registry[state_stack[-1]].hrow[item.key]
+                next_state = State.registry[nxt]
+                state_stack.append(next_state.i)
+            elif action == Action.Goto:
+                next_state = State.registry[nxt]
+                state_stack.append(next_state.i)
+            elif action == Action.Accept:
+                break
             else:
-                next_token, *tokens = tokens
-        # use the next_token on the state stack to decide what to do.
-        (action, nxt) = State.registry[state_stack[-1]].hrow[next_token]
-        if action == Action.Shift:
-            next_state = State.registry[nxt]
-            # this means we can shift.
-            expr_stack.append((next_token, []))
-            state_stack.append(next_state.i)
-            next_token = None
-        elif action == Action.Reduce:
-            item = nxt
-            # Remove the matched topmost L symbols (and parse trees and
-            # associated state numbers) from the parse stack.
-            # pop the items' rhs symbols off the stack
-            pnum = len(item.expr)
-            popped = expr_stack[-pnum:]
-            expr_stack = expr_stack[:-pnum]
-            # push the lhs symbol of item
-            expr_stack.append((item.key, popped))
-            # pop the same number of states.
-            state_stack = state_stack[:-pnum]
-            (action, nxt) = State.registry[state_stack[-1]].hrow[item.key]
-            next_state = State.registry[nxt]
-            state_stack.append(next_state.i)
-        elif action == Action.Goto:
-            next_state = State.registry[nxt]
-            state_stack.append(next_state.i)
-        elif action == Action.Accept:
-            break
-        else:
-            raise Exception("Syntax error")
+                raise Exception("Syntax error")
 
-    assert len(expr_stack) == 1
-    return expr_stack[0]
-
-def initialize(grammar, start):
-    grammar[start][0].append(EOF)
-    State([], grammar).construct_states(start)
+        assert len(expr_stack) == 1
+        return expr_stack[0]
 
 def main(args):
-    initialize(grammar, START_SYMBOL)
-    print(parse(sys.argv[1], grammar))
+    lr1 = LR1Parser(grammar, START_SYMBOL)
+    print(lr1.parse(sys.argv[1]))
 
 if __name__ == '__main__':
     main(sys.argv)
