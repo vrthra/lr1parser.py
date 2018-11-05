@@ -98,79 +98,53 @@ def followset(grammar, start):
     first = firstset(grammar, epsilon)
     return followset_(grammar, epsilon, first, follow)
 
-class PLine:
+class Item:
     cache = {}
     counter = 0
-    fdict = None
-    def __init__(self, key, production, cursor=0, lookahead=set(), pnum=0):
-        self.key,self.production,self.cursor,self.lookahead = key,production,cursor,lookahead
-        self.tokens = self.production
+    def __init__(self, key, expr, dot=0, lookahead=set(), pnum=0):
+        self.key,self.expr,self.dot,self.lookahead = key,expr,dot,lookahead
+        self.tokens = self.expr
         self.pnum = pnum
 
     @classmethod
-    def reset(cls):
-        PLine.cache.clear()
-        PLine.fdict = None
-        PLine.counter = 0
-
-    @classmethod
     def init_cache(cls, grammar, fdict):
-        PLine.fdict = fdict
         for key in sorted(grammar.keys()):
-            for production in grammar[key]:
-                PLine.cache[str((key, production, 0))] = PLine(key, production,
-                        cursor=0, lookahead=fdict[key], pnum=PLine.counter)
-                PLine.counter += 1
-        return len(PLine.cache.keys())
+            for expr in grammar[key]:
+                Item.cache[str((key, expr, 0))] = Item(key, expr, dot=0, lookahead=fdict[key], pnum=Item.counter)
+                Item.counter += 1
+        return len(Item.cache.keys())
 
     @classmethod
-    def get(cls, key, production, cursor):
+    def get(cls, key, expr, dot):
         """
         Try to get a predefined pline. If we fail, create new instead.
         """
-        val = PLine.cache.get(str((key, production, cursor)))
+        val = Item.cache.get(str((key, expr, dot)))
         if val: return val
 
-        seed = PLine.cache.get(str((key, production, 0)))
-        val = PLine(key, production, cursor, seed.lookahead, seed.pnum)
-        PLine.cache[str((key, production, cursor))] = val
+        seed = Item.cache.get(str((key, expr, 0)))
+        val = Item(key, expr, dot, seed.lookahead, seed.pnum)
+        Item.cache[str((key, expr, dot))] = val
 
         return val
-
-    @classmethod
-    def from_seed(cls, obj, cursor):
-        """
-        To be used when we need a new pline when we advance the current pline.
-        Important: the production rule is unchanged. Only the cursor may be
-        different
-        """
-        return PLine.get(obj.key, obj.production, cursor)
-
-    def production_number(self):
-        """
-        The number of the original production rule.
-        Does not consider cursor location
-        """
-        return self.pnum
 
     def __repr__(self): return str(self)
 
     def __str__(self):
-        return "[p%s]: %s -> %s \tcursor: %s %s" % (self.production_number(),
-                self.key, ''.join([str(i) for i in self.tokens]), self.cursor, '@' + ''.join(sorted(self.lookahead)))
+        return "[p%s]: %s -> %s \tcursor: %s %s" % (self.pnum,
+                self.key, ''.join([str(i) for i in self.tokens]), self.dot, '@' + ''.join(sorted(self.lookahead)))
 
     def advance(self):
-        if self.cursor >= len(self.tokens): return '', None
-        if self.at(self.cursor) == EOF: return '', None
-        token = self.at(self.cursor)
-        return token, PLine.from_seed(self, self.cursor+1)
+        if self.dot >= len(self.tokens): return None
+        if self.at_dot() == EOF: return None
+        return Item.get(self.key, self.expr, self.dot+1)
 
-    def at(self, cursor):
-        if cursor >= len(self.tokens): return None
-        return self.tokens[cursor]
+    def at_dot(self):
+        if self.dot >= len(self.tokens): return None
+        return self.tokens[self.dot]
 
-def lr1_closure(closure, cursor, grammar):
-    # get non-terminals following start.cursor
+def lr1_closure(closure, dot, grammar):
+    # get non-terminals following start.dot
     # a) Add the item itself to the closure
     items = closure[:] # copy
     seen = set()
@@ -179,15 +153,15 @@ def lr1_closure(closure, cursor, grammar):
     while items:
         item, *items = items
         # b) For any item in the closure, A :- α . β γ where the next symbol
-        # after the dot is a nonterminal, add the production rules of that
+        # after the dot is a nonterminal, add the expr rules of that
         # symbol where the dot is before the first item
         # (e.g., for each rule β :- γ, add items: β :- . γ
-        token = item.at(item.cursor)
+        token = item.at_dot()
         if not token: continue
         if token in seen: continue
         if token in grammar:
             for ps in grammar[token]:
-                pl = PLine.get(key=token, production=ps, cursor=0)
+                pl = Item.get(key=token, expr=ps, dot=0)
                 items.append(pl)
                 closure.append(pl)
                 seen.add(pl.key)
@@ -197,11 +171,6 @@ class State:
     counter = 1
     registry = {}
     cache = {}
-    def reset():
-        PLine.reset()
-        State.counter = 1
-        State.registry = {}
-        State.cache = {}
 
     def __init__(self, plines, sfrom=None):
         self.plines = plines
@@ -236,12 +205,12 @@ class State:
     @classmethod
     def construct_initial_state(cls, grammar, start=START_SYMBOL):
         _, _epsilon, _first, follow = followset(grammar, start)
-        PLine.init_cache(grammar, follow)
+        Item.init_cache(grammar, follow)
         production_str = grammar[start][0]
 
-        pl = PLine.get(key=start, production=production_str, cursor=0)
+        pl = Item.get(key=start, expr=production_str, dot=0)
 
-        lr1_items = lr1_closure(closure=[pl], cursor=0, grammar=grammar)
+        lr1_items = lr1_closure(closure=[pl], dot=0, grammar=grammar)
         state =  cls(lr1_items, 0)
         # seed state
         state.start, state.grammar = start, grammar
@@ -252,9 +221,10 @@ class State:
         if token not in self.grammar: return None
         new_plines = []
         for pline in self.plines:
-            tadv, new_pline = pline.advance()
-            if token == tadv:
-                new_plines.append(new_pline)
+            if pline.at_dot() == token:
+                new_pline = pline.advance()
+                if new_pline:
+                    new_plines.append(new_pline)
         if not new_plines: return None
         s = self.form_closure(new_plines)
         self.go_tos[token] = s
@@ -266,11 +236,12 @@ class State:
         if token in self.grammar: return None
         new_plines = []
         for pline in self.plines:
-            tadv, new_pline = pline.advance()
-            if token == tadv:
-                new_plines.append(new_pline)
+            if pline.at_dot() == token:
+                new_pline = pline.advance()
+                if new_pline:
+                    new_plines.append(new_pline)
         if not new_plines: return None
-        # each time we shift, we have to build a new closure, with cursor at 0
+        # each time we shift, we have to build a new closure, with dot at 0
         # for the newly added rules.
         s = self.form_closure(new_plines)
         self.shifts[token] = s
@@ -278,18 +249,9 @@ class State:
         return s
 
     def form_closure(self, plines):
-        closure = lr1_closure(closure=plines, cursor=0, grammar=self.grammar)
+        closure = lr1_closure(closure=plines, dot=0, grammar=self.grammar)
         s = State.get(plines=plines, sfrom=self)
         return s
-
-    def get_reduction(self, nxt_tok):
-        # is the cursor at the end in any of the plines?
-        for pline in self.plines:
-            if pline.cursor + 1 >= len(pline.tokens):
-                res = nxt_tok in pline.lookahead
-                if res: return pline
-        # return the production number too for this pline
-        return None
 
     @classmethod
     def construct_states(cls, grammar, start=START_SYMBOL):
@@ -325,10 +287,10 @@ class State:
             # for each item, with an LR with dot at the end, add a reduce
             # r p
             for line in state.plines:
-                if line.at(line.cursor) == EOF:
+                if line.at_dot() == EOF:
                     key = EOF 
                     state.hrow[key] = (Action.Accept, None)
-                elif line.cursor + 1 > len(line.tokens):
+                elif line.dot + 1 > len(line.tokens):
                     for key in line.lookahead:
                         state.hrow[key] = (Action.Reduce, line)
         return state1
