@@ -33,7 +33,14 @@ term_grammar = {'<start>': ['<expr>'],
  '<integer>': ['<digit><integer>', '<digit>'],
  '<digit>': ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']}
 
+lr0_grammar = {
+        '<start>' : [['<S>']],
+        '<S>': [['(','<L>', ')'], ['1']],
+        '<L>': [['<S>'],['<L>', ',','<S>']]
+        }
+
 grammar = canonical(term_grammar)
+grammar = lr0_grammar
 
 def rules(g):
     return [(k, e) for k, a in g.items() for e in a]
@@ -112,15 +119,15 @@ class Parser(object):
 class Item:
     cache = {}
     counter = 0
-    def __init__(self, key, expr, dot=0, lookahead=set(), pnum=0):
-        self.key,self.expr,self.dot,self.lookahead = key,expr,dot,lookahead
-        self.pnum = pnum
+    def __init__(self, key, expr, dot=0, rule_number=0):
+        self.key,self.expr,self.dot,= key,expr,dot
+        self.rule_number = rule_number
 
     @classmethod
     def init_cache(cls, grammar, fdict):
         for key in sorted(grammar.keys()):
             for expr in grammar[key]:
-                Item.cache[str((key, expr, 0))] = Item(key, expr, dot=0, lookahead=fdict[key], pnum=Item.counter)
+                Item.cache[str((key, expr, 0))] = Item(key, expr, dot=0, rule_number=Item.counter)
                 Item.counter += 1
 
     @classmethod
@@ -129,7 +136,7 @@ class Item:
         if val: return val
 
         seed = Item.cache.get(str((key, expr, 0)))
-        val = Item(key, expr, dot, seed.lookahead, seed.pnum)
+        val = Item(key, expr, dot, seed.rule_number)
         Item.cache[str((key, expr, dot))] = val
 
         return val
@@ -137,8 +144,8 @@ class Item:
     def __repr__(self): return str(self)
 
     def __str__(self):
-        return "[p%s]: %s -> %s \tcursor: %s %s" % (self.pnum,
-                self.key, ''.join([str(i) for i in self.expr]), self.dot, '@' + ''.join(sorted(self.lookahead)))
+        return "[p%s]: %s -> %s \tcursor: %s" % (self.rule_number,
+                self.key, ''.join([str(i) for i in self.expr]), self.dot)
 
     def advance(self):
         if self.dot >= len(self.expr): return None
@@ -159,6 +166,7 @@ class State:
         self._tos = {}
         self.i = State.counter
         self.hrow = {}
+        self.action = None
         self.grammar = grammar
         State.counter += 1
         State.registry[self.i] = self
@@ -201,9 +209,9 @@ class State:
 
 
     def form_closure(self, items):
-        return State.get(self.lr1_closure(closure=items, dot=0), self.grammar)
+        return State.get(self.lr0_closure(closure=items, dot=0), self.grammar)
 
-    def lr1_closure(self, closure, dot):
+    def lr0_closure(self, closure, dot):
         # get non-terminals following start.dot
         # a) Add the item itself to the closure
         items = closure[:] # copy
@@ -227,7 +235,7 @@ class State:
                     seen.add(pl.key)
         return closure
 
-class LR1Parser(Parser):
+class LR0Parser(Parser):
     def __init__(self, grammar, start):
         grammar[start][0].append(EOF)
         super().__init__(grammar, start)
@@ -251,33 +259,25 @@ class LR1Parser(Parser):
                     action = Action.Shift if key not in self.grammar else Action.Goto
                     state.hrow[key] = (action, new_state.i)
 
+        # mark all reduce
         for state in all_states:
-            # for each item, with an LR left of $, add an accept.
-            # for each item, with an LR with dot at the end, add a reduce
-            # r p
-            for line in state.items:
-                if line.at_dot() == EOF:
-                    state.hrow[EOF] = (Action.Accept, None)
-                elif line.dot + 1 > len(line.expr):
-                    for key in line.lookahead:
-                        state.hrow[key] = (Action.Reduce, line)
-        return state1
-
+            for item in state.items:
+                if item.at_dot() is None:
+                    for t in terminals(self.grammar):
+                        state.hrow[t] = (Action.Reduce, item)
+                elif item.at_dot() == EOF:
+                    state.hrow[EOF] = (Action.Accept, item)
 
     def parse(self, input_text):
         expr_stack = []
         state_stack = [State.registry[1].i]
-        tokens = list(input_text)
+        tokens = list(input_text) + [EOF]
         next_token = None
         tree = []
         while True:
-            if not next_token:
-                if not tokens:
-                    next_token = EOF
-                else:
-                    next_token, *tokens = tokens
-            # use the next_token on the state stack to decide what to do.
-            (action, nxt) = State.registry[state_stack[-1]].hrow[next_token]
+            next_token, *tokens = tokens
+            state = State.registry[state_stack[-1]]
+            (action, nxt) = state.hrow[next_token]
             if action == Action.Shift:
                 next_state = State.registry[nxt]
                 # this means we can shift.
@@ -286,9 +286,6 @@ class LR1Parser(Parser):
                 next_token = None
             elif action == Action.Reduce:
                 item = nxt
-                # Remove the matched topmost L symbols (and parse trees and
-                # associated state numbers) from the parse stack.
-                # pop the items' rhs symbols off the stack
                 pnum = len(item.expr)
                 popped = expr_stack[-pnum:]
                 expr_stack = expr_stack[:-pnum]
@@ -296,7 +293,7 @@ class LR1Parser(Parser):
                 expr_stack.append((item.key, popped))
                 # pop the same number of states.
                 state_stack = state_stack[:-pnum]
-                (action, nxt) = State.registry[state_stack[-1]].hrow[item.key]
+                action,nxt = State.registry[state_stack[-1]].hrow[item.key]
                 next_state = State.registry[nxt]
                 state_stack.append(next_state.i)
             elif action == Action.Goto:
@@ -311,7 +308,7 @@ class LR1Parser(Parser):
         return expr_stack[0]
 
 def main(args):
-    lr1 = LR1Parser(grammar, START_SYMBOL)
+    lr1 = LR0Parser(grammar, START_SYMBOL)
     print(lr1.parse(sys.argv[1]))
 
 if __name__ == '__main__':
